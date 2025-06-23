@@ -88,7 +88,7 @@ private:
 
 
 // ==== Static Time Initialization ====
-#ifndef ZMPRINTER_IMPL
+#ifdef ZMPRINTER_IMPL
 const std::chrono::time_point<std::chrono::steady_clock> timeToken::startTime =
     std::chrono::steady_clock::now();
 
