@@ -1,99 +1,181 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <cctype>
 #include <iostream>
+#include <memory>
 #include <sstream>
-namespace zm {
-	class printer {
-		public:
-			printer(const char *str);
-			~printer();
-			template<typename... Args>
-			void print(const char *str, const Args &...args) {
-				collect(args...);
-				_print(str);
-			}
-		private:
-			void _print(const char *str);
-			std::stringstream _converter;
-			template<typename head, typename... Args>
-			void collect(const head &h, const Args &...args) {
-				_converter << h;
-				_cash.at(_cash_index) = _converter.str();
-				_converter.str("");
-				_cash_index++;
-				collect(args...);
-			}
-			void collect(){}
-			std::string parse(const char *str);
-			
-
-			std::stringstream _output;
-			std::array<std::string, 9> _cash;
-			std::string _config;
-			int _cash_index = 0;
-
-			static const std::chrono::time_point<std::chrono::steady_clock> _start_time;
-	};
-
-#define ZMPRINTER_IMPL
-#ifdef ZMPRINTER_IMPL
+#include <string>
 #include <string_view>
-	const std::chrono::time_point<std::chrono::steady_clock> printer::_start_time = std::chrono::steady_clock::now();
-	printer::printer(const char *str)
-		:_config(str){
+#include <vector>
 
-	}
-	printer::~printer() {
-	}
-	std::string printer::parse(const char *str) {
-		static std::stringstream message;
-		message.str("");
-		unsigned index=0;
-		for(unsigned i=0;; i++) {
-			if(str[i] == '\0') {
-				message << std::string_view(&str[index], i-index);
-				break;
-			}
-			if(str[i] == '{' && str[i+1] == '%' && std::isdigit(str[i+2]) && str[i+3] == '}') {
-				message << std::string_view(&str[index], i-index);
-				message << _cash[str[i+2]-'0'];
-				index = i+4;
-				i = index;
-			}
-		}
-		return message.str();
-	}
-	void printer::_print(const char *str) {
-		unsigned index = 0;
-		for(unsigned i=0;;i++) {
-			if(_config[i] == '\0') {
-				_output << std::string_view(&_config[index], i-index);
-				break;
-			}
-			if(_config[i] == '{' && _config[i+1] == '%' && _config[i+2] == 't' && _config[i+3] == '}') {
-				_output << std::string_view(&_config[index], i-index);
-				index = i+4;
-				i = index;
-				auto end_time = std::chrono::steady_clock::now();
-				auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - _start_time);
+namespace zm {
 
-				int total_seconds = elapsed.count();
-				int hours = total_seconds / 3600;
-				int minutes = (total_seconds % 3600) / 60;
-				int seconds = total_seconds % 60;
-				_output << hours << ':' << minutes << ':' << seconds;
-			}
-			else if(_config[i] == '{' && _config[i+1] == '%' && _config[i+2] == 'm' && _config[i+3] == '}') {
-				_output << std::string_view(&_config[index], i-index);
-				index = i+4;
-				i = index;
-				_output << parse(str);
-			}
-		}
-		std::cout << _output.str();
-		_output.str("");
-		_cash_index = 0;
-	}
-#endif //ZMPRINTER_IMPL
+// Forward declaration
+class printer;
+
+// ==== Token Interface ====
+struct templateToken {
+    virtual void render(std::ostream& out, const printer& p, const char* dynamicStr) const = 0;
+    virtual ~templateToken() = default;
+};
+
+// ==== Token Types ====
+struct literalToken : templateToken {
+    std::string text;
+    explicit literalToken(std::string txt) : text(std::move(txt)) {}
+    void render(std::ostream& out, const printer&, const char*) const override;
+};
+
+struct timeToken : templateToken {
+    static const std::chrono::time_point<std::chrono::steady_clock> startTime;
+    void render(std::ostream& out, const printer&, const char*) const override;
+};
+
+struct messageToken : templateToken {
+    void render(std::ostream& out, const printer& p, const char* dynamicStr) const override;
+};
+
+// ==== Printer Class ====
+class printer {
+public:
+    explicit printer(const char* config) : tmpl(config) {
+        parseTemplate(tmpl);
+    }
+
+    template<typename... Args>
+    void print(const char* dynamicStr, const Args&... args) {
+        collect(args...);
+        render(dynamicStr);
+    }
+
+    std::string parsePlaceholders(const char* str) const;
+
+private:
+    std::string tmpl;
+    std::stringstream output;
+    std::stringstream converter;
+    std::array<std::string, 9> argBuffer;
+    int argIndex = 0;
+    std::vector<std::unique_ptr<templateToken>> tokens;
+
+    void parseTemplate(const std::string& source);
+
+    void render(const char* dynamicStr);
+
+    template<typename Head, typename... Tail>
+    void collect(const Head& head, const Tail&... tail) {
+        converter.str("");
+        converter.clear();
+        converter << head;
+        if (argIndex < argBuffer.size()) {
+            argBuffer[argIndex++] = converter.str();
+        }
+        collect(tail...);
+    }
+
+    void collect() {}
+
+    static bool matchKey(const char* str, unsigned i, char& key, unsigned& next) {
+        constexpr unsigned keySize = 4;
+        next = i + keySize;
+        if (str[i] != '{' || str[i + 1] != '%' || str[i + 3] != '}') return false;
+        key = str[i + 2];
+        return true;
+    }
+};
+
+
+// ==== Static Time Initialization ====
+#ifdef ZMPRINTER_IMPL
+const std::chrono::time_point<std::chrono::steady_clock> timeToken::startTime =
+    std::chrono::steady_clock::now();
+
+// ==== Token Implementations ====
+void literalToken::render(std::ostream& out, const printer&, const char*) const {
+  out << text;
 }
+void timeToken::render(std::ostream& out, const printer&, const char*) const {
+    auto elapsed = std::chrono::steady_clock::now() - startTime;
+    int secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    int h = secs / 3600, m = (secs % 3600) / 60, s = secs % 60;
+    out << h << ':' << m << ':' << s;
+}
+
+void messageToken::render(std::ostream& out, const printer& p, const char* dynamicStr) const {
+    out << p.parsePlaceholders(dynamicStr);
+}
+
+// ==== Template Parsing ====
+void printer::parseTemplate(const std::string& source) {
+    unsigned i = 0, segmentStart = 0, next = 0;
+    char key;
+
+    while (i < source.size()) {
+        if (!matchKey(source.c_str(), i, key, next)) {
+            ++i;
+            continue;
+        }
+
+        if (i > segmentStart) {
+            tokens.emplace_back(std::make_unique<literalToken>(source.substr(segmentStart, i - segmentStart)));
+        }
+
+        switch (key) {
+            case 't': tokens.emplace_back(std::make_unique<timeToken>()); break;
+            case 'm': tokens.emplace_back(std::make_unique<messageToken>()); break;
+        }
+
+        i = next;
+        segmentStart = next;
+    }
+
+    if (segmentStart < source.size()) {
+        tokens.emplace_back(std::make_unique<literalToken>(source.substr(segmentStart)));
+    }
+}
+//======rendering=========
+void printer::render(const char* dynamicStr) {
+  for (const auto& token : tokens) {
+    token->render(output, *this, dynamicStr);
+  }
+  std::cout << output.str();
+  output.str("");
+  output.clear();
+	argIndex = 0;
+}
+//======parsingPlaceholders=========
+std::string printer::parsePlaceholders(const char* str) const {
+  std::stringstream result;
+  unsigned i = 0, segmentStart = 0, next = 0;
+  char key;
+
+  while (true) {
+    if (str[i] == '\0') {
+      result << std::string_view(&str[segmentStart], i - segmentStart);
+      break;
+    }
+
+    if (!matchKey(str, i, key, next)) {
+      ++i;
+      continue;
+    }
+
+    if (std::isdigit(key)) {
+      result << std::string_view(&str[segmentStart], i - segmentStart);
+      result << argBuffer[key - '0'];
+      segmentStart = next;
+      i = next;
+    } else {
+      ++i;
+    }
+  }
+
+  return result.str();
+}
+
+#endif
+
+} // namespace zm
+
