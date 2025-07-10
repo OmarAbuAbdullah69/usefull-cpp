@@ -1,0 +1,4 @@
+todo:
+add color support
+make it a singletone with multiple modes
+add repeation to some variables
